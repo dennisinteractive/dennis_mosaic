@@ -1,0 +1,401 @@
+<?php
+/**
+ * @file
+ * Code for the Dennis Mosaic feature.
+ */
+
+include_once 'dennis_mosaic.features.inc';
+
+/**
+ * Implements hook_entity_info_alter().
+ */
+function dennis_mosaic_entity_info_alter(&$entity_info) {
+  $entity_info['node']['view modes']['mosaic_small'] = array(
+    'label' => t('Mosaic Small'),
+    'custom settings' => FALSE,
+  );
+  $entity_info['node']['view modes']['mosaic_large'] = array(
+    'label' => t('Mosaic Large'),
+    'custom settings' => FALSE,
+  );
+}
+
+/**
+ * Implements hook_theme().
+ */
+function dennis_mosaic_theme($existing, $type, $theme, $path) {
+  return array(
+    'dennis_mosaic_one_large_multiple_small' => array(
+      'variables' => array(
+        'title' => t('One large item with multiple small items'),
+      ),
+    ),
+    'dennis_mosaic_multiple_small_row' => array(
+      'variables' => array(
+        'title' => t('Multiple small items in a row'),
+      ),
+    ),
+  );
+}
+
+/**
+ * Implements hook_block_info().
+ */
+function dennis_mosaic_block_info() {
+  return array(
+    'mosaic' => array(
+      'info' => t('Dennis Mosaic'),
+      'description' => t('Displays a group of nodes referenced to a term.'),
+      'cache' => DRUPAL_CACHE_CUSTOM,
+    ),
+  );
+}
+
+/**
+ * Helper to build the cache id.
+ */
+function dennis_mosaic_cid($type, $entity_id) {
+  return 'dennis_mosaic_custom_' . $type . '_' . $entity_id;
+}
+
+/**
+ * Clear the custom mosaic caches.
+ */
+function dennis_mosaic_custom_cache_clear($type = FALSE, $entity_id = FALSE) {
+  if ($type && $entity_id) {
+    $cid = dennis_mosaic_cid($type, $entity_id);
+  }
+  elseif ($type) {
+    $cid = 'dennis_mosaic_custom_' . $type;
+  }
+  else {
+    // All mosaic custom caches.
+    $cid = 'dennis_mosaic_custom_';
+  }
+  cache_clear_all($cid, 'cache', TRUE);
+}
+
+/**
+ * Implements hook_node_update().
+ */
+function dennis_mosaic_node_update($node) {
+  if ($node->type == 'mosaic') {
+    dennis_mosaic_custom_cache_clear('node', $node->nid);
+    dennis_mosaic_custom_cache_clear('term');
+  }
+}
+
+/**
+ * Implements hook_node_delete().
+ */
+function dennis_mosaic_node_delete($node) {
+  // Same as updating.
+  dennis_mosaic_node_update($node);
+}
+
+/**
+ * Implements hook_block_view().
+ */
+function dennis_mosaic_block_view($delta = '') {
+  $block = array();
+
+  if ($delta == 'mosaic') {
+
+    // Determine which term to show a block for.
+    if (!$term = _dennis_mosaic_active_term()) {
+      return $block;
+    }
+
+    // Find the latest block that references this term.
+    if ($node = dennis_mosaic_get_term_block($term)) {
+      // Custom cache.
+      $cache_key = dennis_mosaic_cid('node', $node->nid);
+      if ($cache = cache_get($cache_key)) {
+        if (is_object($cache)) {
+          $block = $cache->data;
+          return $block;
+        }
+      }
+
+      // Build the render array of the block.
+      $block['content'] = dennis_mosaic_build_render_array($node);
+      cache_set($cache_key, $block);
+    }
+  }
+
+  return $block;
+}
+
+/**
+ * Builds the render array of the mosaic block.
+ */
+function dennis_mosaic_build_render_array($node) {
+  $build = node_view($node);
+  $build['#theme'] = $node->field_mosaic_layout[LANGUAGE_NONE][0]['value'];
+  return $build;
+}
+
+/**
+ * Implements hook_field_formatter_info().
+ */
+function dennis_mosaic_field_formatter_info() {
+  $ret = array(
+    'dennis_mosaic_node' => array(
+      'label' => t('Rendered Mosaic node'),
+      'description' => t('Display the referenced node in a specific view mode'),
+      'field types' => array('node_reference'),
+    ),
+  );
+  return $ret;
+}
+
+/**
+ * Implements hook_field_formatter_view().
+ *
+ * Set the display mode then let the node_reference field formatter do its work.
+ */
+function dennis_mosaic_field_formatter_view($entity_type, $entity, $field, $instance, $langcode, $items, $display) {
+
+  // To prevent infinite recursion caused by reference cycles, we store
+  // diplayed nodes in a recursion queue.
+  $recursion_queue = &drupal_static(__FUNCTION__, array());
+
+  // The recursion queue only needs to track nodes.
+  if ($entity_type == 'node') {
+    list($id) = entity_extract_ids($entity_type, $entity);
+    $recursion_queue[$id] = $id;
+  }
+
+  $nids = array_map(function($value) {
+    return $value['nid'];
+  }, $items);
+
+  // Build  the nodes display.
+  $nodes = node_load_multiple($nids);
+  $nodes_display = array();
+  foreach ($items as $item) {
+    $nid = $item['nid'];
+    if ($item['access'] && !isset($recursion_queue[$nid])) {
+      $nodes_display[$nid] = array(
+        'node' => $nodes[$nid],
+        // Default to small.
+        'view_mode' => 'mosaic_small',
+      );
+    }
+  }
+
+  $build = array();
+  if (empty($nodes_display)) {
+    return $build;
+  }
+
+  // Alter hook to allow modules to change view modes for each item.
+  // Defines hook_dennis_mosaic_display_alter($nodes_display, $entity).
+  drupal_alter('dennis_mosaic_display', $nodes_display, $entity);
+
+  foreach ($nodes_display as $display) {
+    $build[] = node_view($display['node'], $display['view_mode']);
+  }
+
+  return $build;
+}
+
+/**
+ * Implements hook_dennis_mosaic_display_alter().
+ */
+function dennis_mosaic_dennis_mosaic_display_alter(&$nodes_display, $entity) {
+
+  if (empty($entity->field_mosaic_layout[LANGUAGE_NONE][0]['value'])) {
+    $layout = 'one_large_multiple_small';
+  }
+  else {
+    $layout = $entity->field_mosaic_layout[LANGUAGE_NONE][0]['value'];
+  }
+
+  if ($layout == 'one_large_multiple_small') {
+    $first = array_shift($nodes_display);
+    $first['view_mode'] = 'mosaic_large';
+    array_unshift($nodes_display, $first);
+  }
+}
+
+/**
+ * Determine which term to show a block for.
+ */
+function _dennis_mosaic_active_term() {
+  static $term;
+  if (!is_null($term)) {
+    return $term;
+  }
+
+  $path_parts = explode('/', current_path());
+  switch ($path_parts[0]) {
+    case 'taxonomy':
+      // taxonomy/term/3
+      if (isset($path_parts[2]) && is_numeric($path_parts[2])) {
+        $term = taxonomy_term_load($path_parts[2]);
+      }
+      break;
+
+    case 'node':
+      // node/33
+      if ($node = node_load($path_parts[1])) {
+        // @todo block on a node page.
+      }
+      break;
+  }
+
+  return isset($term->tid) ? $term : FALSE;
+}
+
+/**
+ * Gets the most appropriate block to show for the given term.
+ */
+function dennis_mosaic_get_term_block($term) {
+  static $node;
+  if (!is_null($node)) {
+    return $node;
+  }
+
+  // Default to no node found.
+  $node = FALSE;
+
+  // Custom cache.
+  $cache_key = dennis_mosaic_cid('term', $term->tid);
+  if ($cache = cache_get($cache_key)) {
+    if (is_object($cache)) {
+      $nid = $cache->data;
+      if (!empty($nid)) {
+        $node = node_load($nid);
+      }
+      return $node;
+    }
+  }
+
+  // @todo: optionally with depth
+  $query = db_select('node', 'n');
+  $query->join('taxonomy_index', 'ti', 'ti.nid = n.nid');
+  $query->condition('n.type', 'mosaic');
+  $query->condition('ti.tid', $term->tid);
+  $query->orderBy('ti.created', 'DESC');
+  $query->range(0, 1);
+  $query->addField('n', 'nid');
+
+  if ($nid = $query->execute()->fetchField()) {
+    $node = node_load($nid);
+  }
+
+  if ($node) {
+    // Cache just the nid, not the whole node.
+    cache_set($cache_key, $node->nid);
+  }
+  else {
+    // Cache the lack of results.
+    cache_set($cache_key, FALSE);
+  }
+
+  return $node;
+}
+
+/**
+ * All tids that are refenced by a mosaic node.
+ */
+function dennis_mosaic_referenced_tids($nid) {
+  $query = db_select('node', 'n');
+  $query->join('taxonomy_index', 'ti', 'ti.nid = n.nid');
+  $query->condition('n.type', 'mosaic');
+  $query->condition('ti.nid', $nid);
+  $query->addField('ti', 'tid');
+  return $query->execute()->fetchCol();
+}
+
+/**
+ * Implements hook_views_query_alter().
+ *
+ * Removes nids that are in the mosaic block from the category hub.
+ * NB the same will need to be done for any view that has a mosaic block.
+ */
+function dennis_mosaic_views_query_alter(&$view, &$query) {
+  if ($view->name == 'category_hub' && !empty($view->args[0])) {
+    _dennis_mosaic_views_query_alter_nids_exclude($query, $view->args[0]);
+  }
+}
+
+/**
+ * Provides query alter to be used by hook_views_query_alter().
+ *
+ * This is to remove nids that are in a mosaic block.
+ */
+function _dennis_mosaic_views_query_alter_nids_exclude(&$query, $tid) {
+  // Get the nids that need to be excluded from the view.
+  if ($term = taxonomy_term_load($tid)) {
+    if ($node = dennis_mosaic_get_term_block($term)) {
+      if ($items = field_get_items('node', $node, 'field_mosaic_item')) {
+        $nids = array();
+        foreach ($items as $item) {
+          $nids[] = $item['nid'];
+        }
+        if (empty($nids)) {
+          return;
+        }
+        // Exclude the nids from the view.
+        $query->add_where('node', 'node.nid', $nids, 'NOT IN');
+      }
+    }
+  }
+}
+
+/**
+ * Default display configuration for dennis_core_initialize_display_fields().
+ */
+function dennis_mosaic_default_display_settings() {
+  return array(
+    'display' => array(
+      'mosaic_large' => array(
+        'field_teaser_image' => array(
+          'label' => 'hidden',
+          'type' => 'dennis_teaser_image_fallback',
+          'weight' => 1,
+          'settings' => array(
+            'image_style' => '16x9_460',
+            'image_link' => 'content',
+          ),
+          'module' => 'dennis_teaser_image',
+        ),
+        'field_short_title' => array(
+          'label' => 'hidden',
+          'type' => 'text_default',
+          'weight' => 2,
+          'settings' => array(),
+          'module' => 'text',
+        ),
+        'field_short_teaser' => array(
+          'label' => 'hidden',
+          'type' => 'text_default',
+          'weight' => 3,
+          'settings' => array(),
+          'module' => 'text',
+        ),
+      ),
+      'mosaic_small' => array(
+        'field_teaser_image' => array(
+          'label' => 'hidden',
+          'type' => 'dennis_teaser_image_fallback',
+          'weight' => 1,
+          'settings' => array(
+            'image_style' => 'thumbnail_large',
+            'image_link' => 'content',
+          ),
+          'module' => 'dennis_teaser_image',
+        ),
+        'field_short_title' => array(
+          'label' => 'hidden',
+          'type' => 'text_default',
+          'weight' => 2,
+          'settings' => array(),
+          'module' => 'text',
+        ),
+      ),
+    ),
+  );
+}

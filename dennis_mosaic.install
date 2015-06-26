@@ -1,0 +1,61 @@
+<?php
+/**
+ * @file
+ * Install, update and uninstall functions.
+ */
+
+/**
+ * Implements hook_dennis_requirements_alter().
+ */
+function dennis_mosaic_dennis_requirements_alter(&$requirements, $phase, $distro_schema_version) {
+  // Override the dennis_client Distro 1.29.x requirement.
+  if (isset($requirements['dennis_client_mosaic'])) {
+    $desc = $requirements['dennis_client_mosaic']['description'];
+    $desc = str_replace('22614', '24225', $desc);
+    $desc = str_replace('Dennis Mosaic,', '', $desc);
+    $desc = str_replace('Dennis Client Mosaic', 'Dennis Mosaic', $desc);
+    $requirements['dennis_client_mosaic']['title'] = 'Dennis Mosaic';
+    $requirements['dennis_client_mosaic']['value'] = 'Distro 1.33.x';
+    $requirements['dennis_client_mosaic']['description'] = $desc;
+  }
+}
+
+/**
+ * Implements hook_install().
+ */
+function dennis_mosaic_install() {
+  // Initialize display settings for Mosaic displays.
+  $bundles = array('article', 'review', 'product');
+  dennis_core_initialize_display_fields('node', $bundles, dennis_mosaic_default_display_settings());
+
+  $context = new stdClass();
+  $context->disabled = FALSE; /* Edit this to true to make a default context disabled initially */
+  $context->api_version = 3;
+  $context->name = 'mosaic_term_index';
+  $context->description = 'Context to place Mosaic block on term pages';
+  $context->tag = 'base';
+  $context->conditions = array(
+    'taxonomy_term' => array(
+      'values' => array(
+        'category' => 'category',
+      ),
+      'options' => array(
+        'term_form' => '1',
+      ),
+    ),
+  );
+  $context->reactions = array(
+    'block' => array(
+      'blocks' => array(
+        'dennis_mosaic-mosaic' => array(
+          'module' => 'dennis_mosaic',
+          'delta' => 'mosaic',
+          'region' => 'content',
+          'weight' => '-10',
+        ),
+      ),
+    ),
+  );
+  $context->condition_mode = 0;
+  context_save($context);
+}
