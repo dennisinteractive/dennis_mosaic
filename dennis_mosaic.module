@@ -175,7 +175,7 @@ function dennis_mosaic_field_formatter_view($entity_type, $entity, $field, $inst
   $nodes_display = array();
   foreach ($items as $item) {
     $nid = $item['nid'];
-    if ($item['access'] && !isset($recursion_queue[$nid])) {
+    if ($item['access'] && !isset($recursion_queue[$nid]) && !empty($nodes[$nid]->status)) {
       $nodes_display[$nid] = array(
         'node' => $nodes[$nid],
         // Default to small.
