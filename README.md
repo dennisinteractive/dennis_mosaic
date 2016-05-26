@@ -1,2 +1,5 @@
-# dennis_mosaic
-Displays a group of nodes referenced to a term 
+*** ATTENTION ***
+
+This repo is deprecated.
+
+Development will continue on kiln https://didev.kilnhg.com/Code/Drupal-modules/Distro/dennis_mosaic
